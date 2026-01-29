@@ -1,0 +1,273 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Event type enum - prevents junk data, clean queries
+enum EventType {
+  resolve
+  offer_view
+  offer_click
+  gift_view
+  gift_click
+  wishlist_view
+  wishlist_item_purchased
+  credit_purchased
+  credit_gift_sent
+  credit_gift_redeemed
+  credit_used
+  share_wishlist
+  share_purchase
+  referral_signup
+  referral_purchase
+}
+
+enum NotificationType {
+  gift_purchased
+  referral_signup
+  referral_purchased
+  credits_earned
+}
+
+// Credit transaction types
+enum TransactionType {
+  purchase       // User bought credits
+  gift_sent      // User sent gift credits
+  gift_received  // User received gift credits
+  redemption     // Credits used at checkout
+  refund         // Credits refunded
+  referral_bonus // Credits from referral
+}
+
+// Gift credit status
+enum GiftStatus {
+  pending   // Email sent, not yet redeemed
+  redeemed  // Recipient claimed credits
+  expired   // Past expiration date
+  cancelled // Sender cancelled
+}
+
+// Product occasion tags
+enum Occasion {
+  birthday
+  wedding
+  housewarming
+  holiday
+  thank_you
+  just_because
+  baby_shower
+  graduation
+}
+
+// Wishlist occasion types
+enum WishlistOccasion {
+  birthday
+  holiday
+  wedding
+  housewarming
+  baby_shower
+  graduation
+  other
+}
+
+// Wishlist privacy settings
+enum WishlistPrivacy {
+  public    // Anyone can find and view
+  private   // Only owner can view
+  link_only // Only accessible via share link
+}
+
+model Manufacturer {
+  id            String   @id @default(cuid())
+  name          String
+  domain        String?
+  supportEmail  String?
+  returnsUrl    String?
+  verified      Boolean  @default(false)
+  madeInUsa     Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  offers        Offer[]
+}
+
+model Offer {
+  id               String          @id @default(cuid())
+  manufacturerId   String
+  manufacturer     Manufacturer    @relation(fields: [manufacturerId], references: [id], onDelete: Cascade)
+  title            String
+  directUrl        String
+  priceCents       Int?
+  currency         String          @default("USD")
+  asin             String?         @db.VarChar(16)
+  identifiers      Json?
+  active           Boolean         @default(true)
+  occasions        Occasion[]
+  tags             String[]
+  imageUrl         String?
+  description      String?         @db.Text
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+  giftLinks        GiftLink[]
+  events           Event[]
+  resolvedRequests SourceRequest[]
+  wishlistItems    WishlistItem[]
+
+  @@index([asin])
+}
+
+model GiftLink {
+  id            String   @id @default(cuid())
+  offerId       String
+  offer         Offer    @relation(fields: [offerId], references: [id], onDelete: Cascade)
+  recipientName String?
+  message       String?
+  createdAt     DateTime @default(now())
+  events        Event[]
+}
+
+model Event {
+  id        String    @id @default(cuid())
+  type      EventType
+  sessionId String?
+  offerId   String?
+  giftId    String?
+  offer     Offer?    @relation(fields: [offerId], references: [id], onDelete: SetNull)
+  gift      GiftLink? @relation(fields: [giftId], references: [id], onDelete: SetNull)
+  meta      Json?
+  createdAt DateTime  @default(now())
+
+  @@index([type])
+  @@index([sessionId])
+  @@index([offerId])
+  @@index([giftId])
+}
+
+model SourceRequest {
+  id              String   @id @default(cuid())
+  asin            String?
+  amazonUrl       String
+  title           String?
+  userEmail       String?
+  resolved        Boolean  @default(false)
+  resolvedOfferId String?
+  resolvedOffer   Offer?   @relation(fields: [resolvedOfferId], references: [id])
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([asin])
+  @@index([amazonUrl])
+  @@index([resolved])
+}
+
+model Wishlist {
+  id          String            @id @default(cuid())
+  userId      String            // Clerk user ID
+  title       String
+  description String?
+  occasion    WishlistOccasion?
+  privacy     WishlistPrivacy   @default(link_only)
+  shareToken  String            @unique @default(cuid())
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  items       WishlistItem[]
+
+  @@index([userId])
+  @@index([shareToken])
+}
+
+model WishlistItem {
+  id          String    @id @default(cuid())
+  wishlistId  String
+  wishlist    Wishlist  @relation(fields: [wishlistId], references: [id], onDelete: Cascade)
+  offerId     String
+  offer       Offer     @relation(fields: [offerId], references: [id], onDelete: Cascade)
+  note        String?   // Personal note about the item
+  priority    Int       @default(0) // For sorting/prioritizing items
+  isPurchased Boolean   @default(false)
+  purchasedAt DateTime?
+  purchasedBy String?   // Anonymous identifier or name of purchaser
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([wishlistId, offerId]) // Prevent duplicate items in same wishlist
+  @@index([wishlistId])
+  @@index([offerId])
+  @@index([isPurchased])
+}
+
+model CreditBalance {
+  id           String              @id @default(cuid())
+  userId       String              @unique // Clerk user ID
+  balanceCents Int                 @default(0) // Current balance in cents
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+  transactions CreditTransaction[]
+}
+
+model CreditTransaction {
+  id          String          @id @default(cuid())
+  balanceId   String
+  balance     CreditBalance   @relation(fields: [balanceId], references: [id])
+  type        TransactionType
+  amountCents Int             // Positive for credits, negative for debits
+  description String
+  referenceId String?         // Stripe payment ID, gift ID, order ID
+  createdAt   DateTime        @default(now())
+
+  @@index([balanceId])
+  @@index([type])
+  @@index([createdAt])
+}
+
+model GiftCredit {
+  id             String     @id @default(cuid())
+  senderId       String     // Clerk user ID
+  recipientEmail String
+  recipientId    String?    // Set when redeemed
+  amountCents    Int
+  message        String?
+  token          String     @unique @default(cuid())
+  status         GiftStatus @default(pending)
+  expiresAt      DateTime   // 1 year from creation
+  redeemedAt     DateTime?
+  createdAt      DateTime   @default(now())
+
+  @@index([senderId])
+  @@index([recipientEmail])
+  @@index([token])
+  @@index([status])
+}
+
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  type      NotificationType
+  title     String
+  message   String
+  read      Boolean          @default(false)
+  meta      Json?
+  createdAt DateTime         @default(now())
+
+  @@index([userId])
+  @@index([userId, read])
+  @@index([createdAt])
+}
+
+model Referral {
+  id           String    @id @default(cuid())
+  referrerId   String
+  referralCode String    @unique
+  referredId   String?
+  referredEmail String?
+  hasPurchased Boolean   @default(false)
+  bonusPaidAt  DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@index([referrerId])
+  @@index([referralCode])
+  @@index([referredId])
+}
